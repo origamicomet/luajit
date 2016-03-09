@@ -1,0 +1,41 @@
+!.gitignore
+
+_build/
+src/lj_bcdef.h
+src/host/buildvm_arch.h
+*.o
+*.obj
+*.ilk
+*.pdb
+*.exe
+*.lib
+*.dll
+*.exp
+
+# Windows
+Thumbs.db
+ehthumbs.db
+Desktop.ini
+$RECYCLE.BIN/
+*.cab
+*.msi
+*.msm
+*.msp
+
+# Mac OS X
+.DS_Store
+.AppleDouble
+.LSOverride
+Icon
+._*
+.Spotlight-V100
+.Trashes
+.AppleDB
+.AppleDesktop
+Network Trash Folder
+Temporary Items
+.apdisk
+
+# Linux
+*~
+.directory
