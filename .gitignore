@@ -1,9 +1,18 @@
 !.gitignore
 
+# Products
 _build/
+
+# Intermediates
 src/lj_bcdef.h
 src/host/buildvm_arch.h
-*.o
+src/jit/vmdef.lua
+src/lj_ffdef.h
+src/lj_folddef.h
+src/lj_libdef.h
+src/lj_recdef.h
+
+# Windows
 *.obj
 *.ilk
 *.pdb
@@ -12,30 +21,7 @@ src/host/buildvm_arch.h
 *.dll
 *.exp
 
-# Windows
-Thumbs.db
-ehthumbs.db
-Desktop.ini
-$RECYCLE.BIN/
-*.cab
-*.msi
-*.msm
-*.msp
-
-# Mac OS X
-.DS_Store
-.AppleDouble
-.LSOverride
-Icon
-._*
-.Spotlight-V100
-.Trashes
-.AppleDB
-.AppleDesktop
-Network Trash Folder
-Temporary Items
-.apdisk
-
-# Linux
-*~
-.directory
+# Mac & Linux
+*.o
+*.a
+*.so

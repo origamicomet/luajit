@@ -1,70 +1,158 @@
-require 'visual_studio'
+require 'active_support'
+require 'active_support/core_ext'
+
 require 'fileutils'
 
-CONFIGURATIONS = %i{debug development release}
-PLATFORMS = %i{windows macosx linux}
-ARCHITECTURES = %i{x86 x86_64}
-TOOLCHAINS = %i{msvc gcc clang+llvm}
+TOOLCHAINS = %w{msvc gcc clang}
 
-# TOOLCHAIN=msvc PLATFORM=windows ARCHS=x86,x86_64 CONFIGURATIONS=debug,development,release rake build
+PLATFORMS = %w{windows mac linux}
+ARCHITECTURES = %w{x86 x86_64}
+CONFIGURATIONS = %w{debug development release}
 
-task :build do
-  puts "Building LuaJIT..."
+SUFFIXES = {
+  'x86' => '32',
+  'x86_64' => '64'
+}
 
-  FileUtils.mkdir_p ['_build/lib', '_build/bin']
-
-  configurations = ENV['CONFIGURATIONS'] ? ENV['CONFIGURATIONS'].split(',').map(&:to_sym) : CONFIGURATIONS
-  configurations.each{|config| raise "Unknown configuration '#{config}'!" unless CONFIGURATIONS.include?(config)}
-  platform = ENV['PLATFORM'].to_sym
-  raise "Unknown platform '#{platform}'!" unless PLATFORMS.include?(platform)
-  architectures = ENV['ARCHS'] ? ENV['ARCHS'].split(',').map(&:to_sym) : ARCHITECTURES
-  architectures.each{|architecture| raise "Unknown architecture '#{architecture}'!" unless ARCHITECTURES.include?(architecture)}
-
-  case ENV['TOOLCHAIN']
-    when 'msvc'
-      raise "You don't have Visual Studio installed!" unless VisualStudio.available?
-      vs = VisualStudio.latest
-      puts "Defaulting to #{vs.name.pretty}."
-      build_using_msvc(vs, configurations, platform, architectures)
-    when /vs20(05|08|10|12|13|15)/
-      vs = VisualStudio.find_by_name(ENV['TOOLCHAIN'])
-      raise "You don't have #{VisualStudio::NAME_TO_PRETTY_NAME[ENV['TOOLCHAIN']]} installed." unless vs
-      build_using_msvc(vs, configurations, platform, architectures)
-    when 'gcc'
-    when 'clang+llvm'
-    else
-      raise "Unknown or unsupported toolchain!"
+module Defaults
+  def self.toolchain
+    case self.platform
+      when "windows"
+        "msvc"
+      when "mac"
+        "clang"
+      when "linux"
+        "gcc"
     end
+  end
+
+  def self.platform
+    case RbConfig::CONFIG["host_os"]
+      when /mswin|windows|mingw|cygwin/i
+        "windows"
+      when /darwin/i
+        "mac"
+      when /linux/i
+        "linux"
+    end
+  end
+
+  def self.architectures
+    %w{x86 x86_64}
+  end
+
+  def self.configurations
+    %w{debug development release}
+  end
+end
+
+# TODO(mtwilliams): Prase `toolchain` to allow `toolchain@version`.
+
+task :build, [:toolchain, :platform, :architectures, :configurations] do |t, args|
+  args.with_defaults(
+    :toolchain => Defaults.toolchain,
+    :platform => Defaults.platform,
+    :architectures => Defaults.architectures,
+    :configurations => Defaults.configurations)
+
+  toolchain = args[:toolchain].inquiry
+  platform = args[:platform].inquiry
+  architectures = args[:architectures].map(&:inquiry)
+  configurations = args[:configurations].map(&:inquiry)
+
+  raise "Unknown or unsupported platform!" unless PLATFORMS.include?(platform)
+  raise "Unknown architecture!" unless architectures.all? {|arch| ARCHITECTURES.include?(arch)}
+  raise "Unknown configuration!" unless configurations.all? {|config| CONFIGURATIONS.include?(config)}
+
+  matrix = [platform].product(architectures).product(configurations).map(&:flatten)
+
+  FileUtils.mkdir_p ['_build/bin', '_build/lib']
+
+  if toolchain.msvc?
+    require 'visual_studio'
+
+    raise "Can't find VisualStudio!" unless VisualStudio.available?
+
+    vs = VisualStudio.latest
+    vc = vs.products[:c_and_cpp]
+
+    matrix.each_with_index do |triplet, build|
+      platform, architecture, configuration = *triplet
+
+      name = [configuration, platform, architecture]
+         .map { |component| SUFFIXES.fetch(component, component) }
+         .join('_')
+
+      platform_is_supported = vc.supports[:platforms].include?(platform)
+      architecture_is_supported = vc.supports[:architectures].include?(architecture)
+
+      raise "Your install of #{vc.name.pretty} doesn't support #{platform}." unless platform_is_supported
+      raise "Your install of #{vc.name.pretty} doesn't support #{architecture}." unless architecture_is_supported
+
+      sdk = vc.sdks[platform].first
+      env = vc.environment(target: {platform: platform, architecture: architecture})
+
+      case platform
+        when :windows
+          puts format("[%-2d/%2d] Building for `%s`...", build+1, matrix.length+1, name)
+
+          env = env.merge({'LJDLLNAME' => "luajit_#{name}.dll",
+                           'LJLIBNAME' => "luajit_#{name}.lib"})
+
+          puts " ~> Building #{name}"
+          success = system(env, "cmd.exe", "/c", "cd src & msvcbuild debug")
+          raise "Failed!" unless success
+
+          puts "~> Moving artifacts to `_build/`"
+          FileUtils.move "src/luajit_#{name}.lib", "_build/lib/luajit_#{name}.lib"
+          FileUtils.move "src/luajit_#{name}.dll", "_build/bin/luajit_#{name}.dll"
+          FileUtils.move "src/luajit_#{name}.pdb", "_build/bin/luajit_#{name}.pdb" if File.exist? "src/luajit_#{suffix}.pdb"
+
+          puts "~> Deleting intermediates"
+          FileUtils.rm_f Dir.glob("src/**.{ilk,dll,lib,pdb,exe,obj,o,exp}")
+          FileUtils.rm_f %w{src/lj_bcdef.h src/host/buildvm_arch.h}
+        end
+    end
+  elsif toolchain.clang? or toolchain.gcc?
+    matrix.each_with_index do |triplet, build|
+      platform, architecture, configuration = *triplet
+
+      name = [configuration, platform, architecture]
+               .map { |component| SUFFIXES.fetch(component, component) }
+               .join('_')
+
+      flags_for_architecture = {'x86' => '-m32', 'x86_64' => '-m64'}[architecture]
+
+      env = {
+        'MACOSX_DEPLOYMENT_TARGET' => '10.9',
+        'CC' => "#{toolchain} #{flags_for_architecture}",
+        'CFLAGS' => '-g',
+        'LUAJIT_O' => "luajit_#{name}.o",
+        'LUAJIT_A' => "libluajit_#{name}.a",
+        'LUAJIT_SO' => "libluajit_#{name}.so",
+        'LUAJIT_T' => "luajit_#{name}"
+      }
+
+      puts format("[%-2d/%2d] Building for `%s`...", build+1, matrix.length+1, name)
+
+      puts " ~> Building #{name}"
+      success = system(ENV.to_h.merge(env), "cd src; make")
+      raise "Failed!" unless success
+
+      puts "~> Moving artifacts to `_build/`"
+      FileUtils.move "src/#{env['LUAJIT_A']}", "_build/lib/#{env['LUAJIT_A']}"
+      FileUtils.move "src/#{env['LUAJIT_SO']}", "_build/bin/#{env['LUAJIT_SO']}"
+      FileUtils.move "src/#{env['LUAJIT_T']}", "_build/bin/#{env['LUAJIT_T']}"
+
+      puts "~> Cleaning up"
+      success = system(ENV.to_h.merge(env), "cd src; make clean")
+      raise "Failed!" unless success
+    end
+  else
+    raise "Unsupported toolchain!"
+  end
 end
 
 task :clean do
-  puts "Cleaning..."
   FileUtils.rm_rf '_build'
-end
-
-def build_using_msvc(vs, configurations, platform, architectures)
-  vc = vs.products[:c_and_cpp]
-  platform_is_supported = vc.supports[:platforms].include?(platform)
-  raise "#{vs.name.pretty} doesn't support '#{platform}'!" unless platform_is_supported
-  sdk = vc.sdks[platform].first
-  triplets = configurations.product([platform].product(architectures)).map(&:flatten)
-  triplets.each do |configuration, platform, architecture|
-    architecture_is_supported = vc.supports[:architectures].include?(architecture)
-    raise "#{vs.name.pretty} doesn't support '#{architecture}'!" unless architecture_is_supported
-    env = vc.environment(target: {platform: platform, architecture: architecture})
-    suffix = [configuration, platform, Hash[ARCHITECTURES.zip(%w{32 64})][architecture]].join('_')
-    case platform
-      when :windows
-        puts "~> Building luajit_#{suffix}.dll..."
-        env = env.merge({'LJDLLNAME' => "luajit_#{suffix}.dll",
-                         'LJLIBNAME' => "luajit_#{suffix}.lib"})
-        system(env, "cmd.exe", "/c", "cd src & msvcbuild debug")
-        puts "~> Copying artifacts to _build/"
-        FileUtils.copy "src/luajit_#{suffix}.lib", "_build/lib/luajit_#{suffix}.lib"
-        FileUtils.copy "src/luajit_#{suffix}.dll", "_build/bin/luajit_#{suffix}.dll"
-        FileUtils.copy "src/luajit_#{suffix}.pdb", "_build/bin/luajit_#{suffix}.pdb" if File.exist? "src/luajit_#{suffix}.pdb"
-        FileUtils.rm_f Dir.glob("src/**.{ilk,dll,lib,pdb,exe,obj,o,exp}")
-        FileUtils.rm_f %w{src/lj_bcdef.h src/host/buildvm_arch.h}
-      end
-  end
 end
