@@ -1,9 +1,12 @@
 !.gitignore
 
-# Products
-_build/
+# Ignore Sublime Text 2/3 junk.
+*.sublime-workspace
 
-# Intermediates
+# Ignore automatically fetched tools.
+_build/tools/cache
+
+# Ignore auto-generated intermediates.
 src/lj_bcdef.h
 src/host/buildvm_arch.h
 src/jit/vmdef.lua
@@ -11,17 +14,21 @@ src/lj_ffdef.h
 src/lj_folddef.h
 src/lj_libdef.h
 src/lj_recdef.h
+src/*.o
+src/*.a
+src/*.so
+src/*.obj
+src/*.ilk
+src/*.pdb
+src/*.exe
+src/*.lib
+src/*.dll
+src/*.exp
 
-# Windows
-*.obj
-*.ilk
-*.pdb
-*.exe
-*.lib
-*.dll
-*.exp
+# Ingore build artifacts.
+_build/bin
+_build/lib
+_build/obj
 
-# Mac & Linux
-*.o
-*.a
-*.so
+# Ignore releases.
+_rel/
